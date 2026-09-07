@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Tag and release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Create tag and GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Prefer Go-style vMAJOR.MINOR.PATCH tags. Also accept tags without
+          # the v prefix (e.g. the initial 0.0.1) when computing the next bump.
+          latest="$(
+            {
+              git tag -l 'v[0-9]*.[0-9]*.[0-9]*'
+              git tag -l '[0-9]*.[0-9]*.[0-9]*'
+            } | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true
+          )"
+
+          if [ -z "${latest}" ]; then
+            next="v0.0.1"
+          else
+            IFS=. read -r major minor patch <<< "${latest}"
+            next="$(printf 'v%d.%d.%d' "${major}" "${minor}" "$((patch + 1))")"
+          fi
+
+          if git rev-parse -q --verify "refs/tags/${next}" >/dev/null; then
+            echo "Tag ${next} already exists; skipping"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${next}" -m "Release ${next}"
+          git push origin "refs/tags/${next}"
+
+          gh release create "${next}" \
+            --title "${next}" \
+            --generate-notes
+
+          echo "Created release ${next}"
